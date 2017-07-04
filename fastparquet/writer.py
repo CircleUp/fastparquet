@@ -431,7 +431,7 @@ def make_definitions(data, no_nulls):
     return block, out
 
 
-def write_column(f, data, selement, compression=None):
+def write_column(f, data, selement, compression=None, write_statistics=False):
     """
     Write a single column of data to an open Parquet file
 
@@ -550,7 +550,7 @@ def write_column(f, data, selement, compression=None):
     uncompressed_size = compressed_size + diff
 
     offset = f.tell()
-    s = parquet_thrift.Statistics(max=max, min=min, null_count=num_nulls)
+    s = parquet_thrift.Statistics(max=max, min=min, null_count=num_nulls) if write_statistics else None
 
     p = [parquet_thrift.PageEncodingStats(
             page_type=parquet_thrift.PageType.DATA_PAGE,
@@ -581,7 +581,7 @@ def write_column(f, data, selement, compression=None):
     return chunk
 
 
-def make_row_group(f, data, schema, compression=None):
+def make_row_group(f, data, schema, compression=None, statistics=None):
     """ Make a single row group of a Parquet file """
     rows = len(data)
     if rows == 0:
@@ -598,20 +598,27 @@ def make_row_group(f, data, schema, compression=None):
                 comp = compression.get(column.name, None)
             else:
                 comp = compression
+
+            if isinstance(statistics, dict):
+                write_statistics = statistics.get(column.name, False)
+            else:
+                write_statistics = False
+
             chunk = write_column(f, data[column.name], column,
-                                 compression=comp)
+                                 compression=comp,
+                                 write_statistics=write_statistics)
             rg.columns.append(chunk)
     rg.total_byte_size = sum([c.meta_data.total_uncompressed_size for c in
                               rg.columns])
     return rg
 
 
-def make_part_file(f, data, schema, compression=None, fmd=None):
+def make_part_file(f, data, schema, compression=None, statistics=None, fmd=None):
     if len(data) == 0:
         return
     with f as f:
         f.write(MARKER)
-        rg = make_row_group(f, data, schema, compression=compression)
+        rg = make_row_group(f, data, schema, compression=compression, statistics=statistics)
         if fmd is None:
             fmd = parquet_thrift.FileMetaData(num_rows=len(data),
                                               schema=schema,
@@ -678,7 +685,7 @@ def make_metadata(data, has_nulls=True, ignore_columns=[], fixed_text=None,
     return fmd
 
 
-def write_simple(fn, data, fmd, row_group_offsets, compression,
+def write_simple(fn, data, fmd, row_group_offsets, compression, statistics,
                  open_with, has_nulls, append=False):
     """
     Write to one single file (for file_scheme='simple')
@@ -703,7 +710,7 @@ def write_simple(fn, data, fmd, row_group_offsets, compression,
             end = (row_group_offsets[i+1] if i < (len(row_group_offsets) - 1)
                    else None)
             rg = make_row_group(f, data[start:end], fmd.schema,
-                                compression=compression)
+                                compression=compression, statistics=statistics)
             if rg is not None:
                 fmd.row_groups.append(rg)
 
@@ -713,7 +720,7 @@ def write_simple(fn, data, fmd, row_group_offsets, compression,
 
 
 def write(filename, data, row_group_offsets=50000000,
-          compression=None, file_scheme='simple', open_with=default_open,
+          compression=None, statistics=None, file_scheme='simple', open_with=default_open,
           mkdirs=default_mkdirs, has_nulls=True, write_index=None,
           partition_on=[], fixed_text=None, append=False,
           object_encoding='infer', times='int64'):
@@ -733,6 +740,9 @@ def write(filename, data, row_group_offsets=50000000,
     compression: str, dict
         compression to apply to each column, e.g. GZIP or SNAPPY or
         {col1: "SNAPPY", col2: None} to specify per column.
+    statistics: bool, dict
+        whether to write statistics metadata for each column or
+        {col1: False, col2: True} to specify per column (defaults to True if column not listed)
     file_scheme: 'simple'|'hive'
         If simple: all goes in a single file
         If hive: each row group is in a separate file, and a separate file
@@ -807,7 +817,7 @@ def write(filename, data, row_group_offsets=50000000,
 
     if file_scheme == 'simple':
         write_simple(filename, data, fmd, row_group_offsets,
-                     compression, open_with, has_nulls, append)
+                     compression, statistics, open_with, has_nulls, append)
     elif file_scheme in ['hive', 'drill']:
         if append:
             pf = api.ParquetFile(filename, open_with=open_with)
@@ -828,7 +838,7 @@ def write(filename, data, row_group_offsets=50000000,
             if partition_on:
                 rgs = partition_on_columns(
                     data[start:end], partition_on, filename, part, fmd,
-                    sep, compression, open_with, mkdirs,
+                    sep, compression, statistics, open_with, mkdirs,
                     with_field=file_scheme == 'hive'
                 )
                 fmd.row_groups.extend(rgs)
@@ -864,7 +874,7 @@ def find_max_part(row_groups):
 
 
 def partition_on_columns(data, columns, root_path, partname, fmd, sep,
-                         compression, open_with, mkdirs, with_field=True):
+                         compression, statistics, open_with, mkdirs, with_field=True):
     """
     Split each row-group by the given columns
 
@@ -892,7 +902,7 @@ def partition_on_columns(data, columns, root_path, partname, fmd, sep,
         fullname = sep.join([root_path, path, partname])
         with open_with(fullname, 'wb') as f2:
             rg = make_part_file(f2, df, fmd.schema,
-                                compression=compression, fmd=fmd)
+                                compression=compression, statistics=statistics, fmd=fmd)
         if rg is not None:
             for chunk in rg.columns:
                 chunk.file_path = relname

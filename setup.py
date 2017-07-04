@@ -22,7 +22,7 @@ else:
 
 setup(
     name='fastparquet',
-    version='0.1.0',
+    version='0.1.0.helio-patched',
     description='Python support for Parquet file format',
     author='Martin Durant',
     author_email='mdurant@continuum.io',
