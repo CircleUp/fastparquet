@@ -550,7 +550,10 @@ def write_column(f, data, selement, compression=None, write_statistics=False):
     uncompressed_size = compressed_size + diff
 
     offset = f.tell()
-    s = parquet_thrift.Statistics(max=max, min=min, null_count=num_nulls) if write_statistics else None
+    if write_statistics:
+        s = parquet_thrift.Statistics(max=max, min=min, null_count=num_nulls)
+    else:
+        s = parquet_thrift.Statistics(max='', min='', null_count=num_nulls)
 
     p = [parquet_thrift.PageEncodingStats(
             page_type=parquet_thrift.PageType.DATA_PAGE,
